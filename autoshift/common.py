@@ -27,12 +27,24 @@ from enum import StrEnum, auto
 from pathlib import Path
 from typing import Annotated, Any, Literal, override
 
+import httpx
 import rich.logging
 from pydantic import BeforeValidator, Field, PrivateAttr, SecretStr
 from pydantic_core import PydanticUndefined
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 ROOT_DIR = Path(__file__).parent.parent
+
+HTTP_RETRIES = 3  # retry connect failures (TLS/DNS blips) with backoff
+HTTP_TIMEOUT = 30.0  # the 5s httpx default is too tight for a slow connection
+
+
+def new_client(**kwargs: Any) -> httpx.Client:
+    """httpx client that retries connect errors and forces IPv4."""
+    # 0.0.0.0 forces IPv4 and dodges musl's broken IPv6 fallback on alpine
+    transport = httpx.HTTPTransport(retries=HTTP_RETRIES, local_address="0.0.0.0")
+    kwargs.setdefault("timeout", HTTP_TIMEOUT)
+    return httpx.Client(transport=transport, **kwargs)
 
 
 class AltEnum(StrEnum):

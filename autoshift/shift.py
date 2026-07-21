@@ -30,7 +30,7 @@ import typer
 from bs4 import BeautifulSoup as BSoup
 from bs4 import Tag
 
-from autoshift.common import _L, settings
+from autoshift.common import _L, new_client, settings
 from autoshift.models import Key
 
 base_url = "https://shift.gearboxsoftware.com"
@@ -86,11 +86,19 @@ class ShiftClient:
     def __init__(self):
         # try to load cookies. Query for login data if not present
         self.cookies = self.__load_cookie()
-        self.client = httpx.Client(follow_redirects=True, cookies=self.cookies)
+        self.client = new_client(follow_redirects=True, cookies=self.cookies)
 
     def login(self, user: str | None = None, pw: str | None = None):
         if self.cookies:
-            self.logged_in = self.check_login()
+            try:
+                self.logged_in = self.check_login()
+            except httpx.HTTPError as e:
+                # network blip while verifying: keep the saved cookie instead
+                # of dropping to a password prompt on a schedule
+                _L.warning(
+                    f"Couldn't verify login ({e}). Assuming the saved session is valid."
+                )
+                self.logged_in = True
         if self.logged_in:
             return True
         typer.echo("Login to your SHiFT account...")
@@ -111,6 +119,10 @@ class ShiftClient:
     def check_login(self) -> bool:
         response = self.client.get(f"{base_url}/rewards")
         return response.status_code == 200 and "Sign Out" in response.text
+
+    def save_cookie(self) -> bool:
+        """Persist the session cookie (public wrapper for __save_cookie)."""
+        return self.__save_cookie()
 
     def __save_cookie(self) -> bool:
         """Make ./data folder if not present"""

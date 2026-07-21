@@ -40,7 +40,7 @@ from pydantic import SecretStr
 from typer import Typer
 
 from autoshift import storage
-from autoshift.common import _L, Game, Platform, settings
+from autoshift.common import _L, Game, Platform, new_client, settings
 from autoshift.migrations import run_migrations
 from autoshift.models import Key
 from autoshift.shift import ShiftClient, Status
@@ -112,16 +112,23 @@ def query_keys(game_map: dict[Game, set[Platform]]) -> list[Key]:
 
     # parse all keys
     if settings.SHIFT_SOURCE:
-        if settings.SHIFT_SOURCE.startswith("http"):
-            key_data = httpx.get(settings.SHIFT_SOURCE).json()
-        else:
-            with open(settings.SHIFT_SOURCE) as f:
-                key_data = json.load(f)
+        try:
+            if settings.SHIFT_SOURCE.startswith("http"):
+                with new_client() as c:
+                    key_data = c.get(settings.SHIFT_SOURCE).json()
+            else:
+                with open(settings.SHIFT_SOURCE) as f:
+                    key_data = json.load(f)
 
-        keys = clean_key_data(key_data[0]["codes"])
+            keys = clean_key_data(key_data[0]["codes"])
 
-        num_new_keys = Key.insert_many(keys).on_conflict_ignore().execute()
-        _L.info(f"{num_new_keys or 'no'} new Keys")
+            num_new_keys = Key.insert_many(keys).on_conflict_ignore().execute()
+            _L.info(f"{num_new_keys or 'no'} new Keys")
+        except (httpx.HTTPError, OSError, ValueError, KeyError, IndexError) as e:
+            # source unreachable or malformed, fall back to keys already in the db
+            _L.warning(
+                f"Couldn't fetch new SHiFT codes ({e}). Using already-known keys."
+            )
 
     new_keys = storage.get_keys(game_map)
 
@@ -340,7 +347,12 @@ def main():
             _L.info("Trying to prevent a 'too many requests'-block.")
             sleep(60)
 
-        status = redeem(key)
+        try:
+            status = redeem(key)
+        except httpx.HTTPError as e:
+            # don't let one key's network error abort the whole cycle
+            _L.warning(f"Network error redeeming {key.code} ({e}). Skipping for now.")
+            continue
         # don't spam if we reached the hourly limit
         if status == Status.TRYLATER:
             return
@@ -382,8 +394,14 @@ for name, cmd in click_app.commands.items():
 
 
 def run():
-    click_app()
-    client.__save_cookie()
+    # click exits via SystemExit, so save the cookie from a finally
+    try:
+        click_app()
+    finally:
+        try:
+            client.save_cookie()
+        except Exception as e:
+            _L.debug(f"Couldn't save cookie on exit: {e}")
 
 
 if __name__ == "__main__":
