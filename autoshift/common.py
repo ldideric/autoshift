@@ -210,6 +210,7 @@ class Settings(SettingsFields):
     - Command line args
     - ENV variables
     - .env file
+    - secret files
     """
 
     model_config = SettingsConfigDict(
@@ -219,6 +220,8 @@ class Settings(SettingsFields):
         env_ignore_empty=True,
         env_parse_none_str="None",
         extra="allow",
+        # An exported SHIFT_PASS wins over shift_pass here, so unset it to use the file.
+        secrets_dir="/run/secrets",
     )
 
     @override
