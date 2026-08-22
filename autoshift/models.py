@@ -120,6 +120,7 @@ class Key(BaseModel):
     expires = TimestampField(utc=True, null=True, default=None)
     expired: bool = BooleanField(default=False)
     redeemed: bool = BooleanField(default=False)
+    redeemed_at = TimestampField(utc=True, null=True, default=None)
 
     class Meta:  # pyright: ignore[reportIncompatibleVariableOverride]
         table_name = "keys"

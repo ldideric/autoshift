@@ -116,3 +116,11 @@ def update_2(ops: ShiftMigrator):
     yield ops.add_index("keys", ["code"])
     # codes are unique
     yield ops.add_unique("keys", "code", "game", "platform")
+
+
+@revision
+def update_3(ops: ShiftMigrator):
+    redeemed_at = pw.TimestampField(utc=True, null=True, default=None)
+    # Null on every key redeemed before this column existed; there is no
+    # record of when those went in.
+    yield ops.add_column("keys", "redeemed_at", redeemed_at)

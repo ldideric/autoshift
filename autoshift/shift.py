@@ -22,6 +22,7 @@
 
 import pickle
 import time
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any, Literal
 
@@ -198,6 +199,10 @@ class ShiftClient:
                 retry = False
 
             key.redeemed = status in (Status.SUCCESS, Status.REDEEMED)
+            # Not REDEEMED: that one means the account already had the key, so
+            # the time it went in is not now and is not known.
+            if status == Status.SUCCESS:
+                key.redeemed_at = datetime.now(UTC)
             key.expired = status in (Status.EXPIRED, Status.INVALID)
             key.save()
 

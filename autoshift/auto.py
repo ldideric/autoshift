@@ -26,6 +26,7 @@ import os
 import re
 import sys
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from enum import Enum
 from typing import (
     TYPE_CHECKING,
@@ -39,7 +40,7 @@ import typer
 from pydantic import SecretStr
 from typer import Typer
 
-from autoshift import storage
+from autoshift import status, storage
 from autoshift.common import _L, Game, Platform, new_client, settings
 from autoshift.migrations import run_migrations
 from autoshift.models import Key
@@ -105,10 +106,20 @@ def clean_key_data(key_data: Sequence[dict]):
             yield data
 
 
-def query_keys(game_map: dict[Game, set[Platform]]) -> list[Key]:
-    """Query new keys for given games and platforms
+@dataclass
+class KeyQuery:
+    """What one pass over the code source produced."""
 
-    Returns dict of dicts of lists with [game][platform] as keys"""
+    keys: list[Key]
+    new_keys: int
+    source_ok: bool
+
+
+def query_keys(game_map: dict[Game, set[Platform]]) -> KeyQuery:
+    """Query new keys for given games and platforms"""
+
+    num_new_keys = 0
+    source_ok = True
 
     # parse all keys
     if settings.SHIFT_SOURCE:
@@ -122,17 +133,25 @@ def query_keys(game_map: dict[Game, set[Platform]]) -> list[Key]:
 
             keys = clean_key_data(key_data[0]["codes"])
 
-            num_new_keys = Key.insert_many(keys).on_conflict_ignore().execute()
+            # insert_many returns a row id on SQLite, not a count: with every
+            # code conflicting it reports an id left over from an earlier one.
+            known = Key.select().count()
+            Key.insert_many(keys).on_conflict_ignore().execute()
+            num_new_keys = Key.select().count() - known
+
             _L.info(f"{num_new_keys or 'no'} new Keys")
         except (httpx.HTTPError, OSError, ValueError, KeyError, IndexError) as e:
             # source unreachable or malformed, fall back to keys already in the db
+            source_ok = False
             _L.warning(
                 f"Couldn't fetch new SHiFT codes ({e}). Using already-known keys."
             )
 
-    new_keys = storage.get_keys(game_map)
-
-    return new_keys
+    return KeyQuery(
+        keys=storage.get_keys(game_map),
+        new_keys=num_new_keys,
+        source_ok=source_ok,
+    )
 
 
 PlatformArg = Enum("Platform", [(p.name, p.value) for p in Platform] + [("all", "all")])
@@ -338,26 +357,44 @@ def main():
     from time import sleep
 
     # query all keys
-    all_keys = query_keys(settings._GAMES_PLATFORM_MAP)
+    query = query_keys(settings._GAMES_PLATFORM_MAP)
 
     _L.info("Trying to redeem now.")
 
-    for num, key in enumerate(all_keys):
+    redeemed = 0
+    for num, key in enumerate(query.keys):
         if num and not (num % 15):
             _L.info("Trying to prevent a 'too many requests'-block.")
             sleep(60)
 
         try:
-            status = redeem(key)
+            result = redeem(key)
         except httpx.HTTPError as e:
             # don't let one key's network error abort the whole cycle
             _L.warning(f"Network error redeeming {key.code} ({e}). Skipping for now.")
             continue
-        # don't spam if we reached the hourly limit
-        if status == Status.TRYLATER:
-            return
 
-    _L.info("No more keys left!")
+        # Not REDEEMED: that one means the account already had the key.
+        if result == Status.SUCCESS:
+            redeemed += 1
+
+        # don't spam if we reached the hourly limit
+        if result == Status.TRYLATER:
+            break
+    else:
+        _L.info("No more keys left!")
+
+    pending = len(storage.get_keys(settings._GAMES_PLATFORM_MAP))
+    status.record(
+        source_ok=query.source_ok,
+        new_keys=query.new_keys,
+        redeemed=redeemed,
+        pending=pending,
+    )
+    _L.info(
+        f"Run done: source {'ok' if query.source_ok else 'unavailable'}, "
+        f"{query.new_keys} new, {redeemed} redeemed, {pending} left to try."
+    )
 
 
 click_app = cast(click.Group, typer.main.get_command(app))
