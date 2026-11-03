@@ -38,20 +38,13 @@ ROOT_DIR = Path(__file__).parent.parent
 HTTP_RETRIES = 3  # retry connect failures (TLS/DNS blips) with backoff
 HTTP_TIMEOUT = 30.0  # the 5s httpx default is too tight for a slow connection
 
-# SHiFT 403s the default python-httpx agent, cookie or not, on every route
-USER_AGENT = (
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
-)
-
 
 def new_client(**kwargs: Any) -> httpx.Client:
     """httpx client that retries connect errors and forces IPv4."""
     # 0.0.0.0 forces IPv4 and dodges musl's broken IPv6 fallback on alpine
     transport = httpx.HTTPTransport(retries=HTTP_RETRIES, local_address="0.0.0.0")
     kwargs.setdefault("timeout", HTTP_TIMEOUT)
-    headers = {"User-Agent": USER_AGENT, **dict(kwargs.pop("headers", {}))}
-    return httpx.Client(transport=transport, headers=headers, **kwargs)
+    return httpx.Client(transport=transport, **kwargs)
 
 
 class AltEnum(StrEnum):
